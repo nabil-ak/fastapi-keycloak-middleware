@@ -2,7 +2,7 @@
 Middleware for FastAPI that supports authenticating users against Keycloak
 """
 
-__version__ = "0.3.0"
+__version__ = "1.0.2"
 
 import logging
 
@@ -22,6 +22,7 @@ from fastapi_keycloak_middleware.schemas.keycloak_configuration import (
     KeycloakConfiguration,
 )
 from fastapi_keycloak_middleware.schemas.match_strategy import MatchStrategy
+from fastapi_keycloak_middleware.setup import setup_keycloak_middleware
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
@@ -35,5 +36,6 @@ __all__ = [
     get_user.__name__,
     get_authorization_result.__name__,
     require_permission.__name__,
+    setup_keycloak_middleware.__name__,
     strip_request.__name__,
 ]

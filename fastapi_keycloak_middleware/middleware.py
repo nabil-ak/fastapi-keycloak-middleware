@@ -9,15 +9,14 @@ import logging
 import re
 import typing
 
-from fastapi import FastAPI
+from jwcrypto.common import JWException
 from starlette.requests import HTTPConnection
-from starlette.responses import PlainTextResponse
-from starlette.types import Receive, Scope, Send
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from fastapi_keycloak_middleware.exceptions import (
     AuthHeaderMissing,
     AuthInvalidToken,
-    AuthTokenExpired,
     AuthUserError,
 )
 from fastapi_keycloak_middleware.keycloak_backend import KeycloakBackend
@@ -57,18 +56,21 @@ class KeycloakMiddleware:
     :param scope_mapper: Custom async function that transforms the claim values
         extracted from the token to permissions meaningful for your application,
         defaults to None
-    :type scope_mapper: typing.Callable[[typing.List[str]], typing.List[str]], optional
+    :type scope_mapper:
+        typing.Callable[[typing.List[str]], typing.Awaitable[typing.List[str]]], optional
     """
 
     def __init__(
         self,
-        app: FastAPI,
+        app: ASGIApp,
         keycloak_configuration: KeycloakConfiguration,
         exclude_patterns: typing.List[str] = None,
         user_mapper: typing.Callable[
             [typing.Dict[str, typing.Any]], typing.Awaitable[typing.Any]
         ] = None,
-        scope_mapper: typing.Callable[[typing.List[str]], typing.List[str]] = None,
+        scope_mapper: typing.Callable[
+            [typing.List[str]], typing.Awaitable[typing.List[str]]
+        ] = None,
     ):
         """Middleware constructor"""
         log.info("Initializing Keycloak Middleware")
@@ -78,6 +80,7 @@ class KeycloakMiddleware:
             user_mapper=user_mapper,
         )
         self.scope_mapper = scope_mapper
+        self.inspect_websockets = keycloak_configuration.enable_websocket_support
         log.debug("Keycloak Middleware initialized")
 
         # Try to compile patterns
@@ -106,10 +109,11 @@ class KeycloakMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         log.debug("Keycloak Middleware is handling request")
 
-        if scope["type"] not in [
-            "http",
-            "websocket",
-        ]:  # pragma nocover # Filter for relevant requests
+        supported_protocols = ["http"]
+        if self.inspect_websockets:
+            supported_protocols.append("websocket")
+
+        if scope["type"] not in supported_protocols:  # Filter for relevant requests
             log.debug("Skipping non-HTTP request")
             await self.app(scope, receive, send)  # pragma nocover # Bypass
             return
@@ -140,73 +144,48 @@ class KeycloakMiddleware:
             scope["auth"], scope["user"] = auth, user
 
         except AuthHeaderMissing:  # Request has no 'Authorization' HTTP Header
-            response = self._auth_header_missing()
+            response = JSONResponse(
+                {"detail": "Your request is missing an 'Authorization' HTTP header"},
+                status_code=401,
+            )
             log.warning("Request is missing an 'Authorization' HTTP header")
             await response(scope, receive, send)
             return
 
-        except AuthTokenExpired:  # Token has expired
-            response = self._token_has_expired()
-            log.warning("Provided token has expired")
-            await response(scope, receive, send)
-            return
-
         except AuthUserError:
-            response = self._user_not_found()
+            response = JSONResponse(
+                {"detail": "Could not find a user based on this token"}, status_code=401
+            )
             log.warning("Could not find a user based on the provided token")
             await response(scope, receive, send)
             return
 
         except AuthInvalidToken:
-            response = self._invalid_token()
+            response = JSONResponse(
+                {"detail": "Unable to verify provided access token"}, status_code=401
+            )
             log.warning("Provided access token could not be validated")
             await response(scope, receive, send)
             return
 
+        except JWException as exc:
+            response = JSONResponse(
+                {"detail": f"Error while validating access token: {exc}"},
+                status_code=401,
+            )
+            log.warning("An error occurred while validating the token")
+            await response(scope, receive, send)
+            return
+
         except Exception as exc:  # pylint: disable=broad-except
-            response = PlainTextResponse(
-                f"An error occurred: {exc.__class__.__name__}", status_code=401
+            response = JSONResponse(
+                {"detail": f"An error occurred: {exc.__class__.__name__}"},
+                status_code=401,
             )
             log.error("An error occurred while authenticating the user")
+            log.exception(exc)
             await response(scope, receive, send)
             return
 
         log.debug("Sending request to next middleware")
         await self.app(scope, receive, send)  # Token is valid
-
-    @staticmethod
-    def _auth_header_missing(*args, **kwargs):  # pylint: disable=unused-argument
-        """
-        Returns a response notifying the user that the request
-        is missing an 'Authorization' HTTP header.
-        """
-        return PlainTextResponse(
-            "Your request is missing an 'Authorization' HTTP header", status_code=401
-        )
-
-    @staticmethod
-    def _token_has_expired(*args, **kwargs):  # pylint: disable=unused-argument
-        """
-        Returns a response notifying the user that the token has expired.
-        """
-        return PlainTextResponse(
-            "Your 'Authorization' HTTP header is invalid", status_code=401
-        )
-
-    @staticmethod
-    def _user_not_found(*args, **kwargs):  # pylint: disable=unused-argument
-        """
-        Returns a response notifying the user that the user was not found.
-        """
-        return PlainTextResponse(
-            "Could not find a user based on this token", status_code=401
-        )
-
-    @staticmethod
-    def _invalid_token(*args, **kwargs):  # pylint: disable=unused-argument
-        """
-        Returns a response notifying the user that the acess token is invalid.
-        """
-        return PlainTextResponse(
-            "Unable to verify provided access token", status_code=401
-        )

@@ -6,13 +6,10 @@ It is used by the middleware to perform the actual authentication.
 
 import logging
 import typing
-from typing import Tuple
 
 import keycloak
-from jose import ExpiredSignatureError, JWTError
-from jose.exceptions import JWTClaimsError
 from keycloak import KeycloakOpenID
-from starlette.authentication import AuthCredentials, AuthenticationBackend, BaseUser
+from starlette.authentication import AuthenticationBackend, BaseUser
 from starlette.requests import HTTPConnection
 
 from fastapi_keycloak_middleware.exceptions import (
@@ -20,7 +17,6 @@ from fastapi_keycloak_middleware.exceptions import (
     AuthHeaderMissing,
     AuthInvalidToken,
     AuthKeycloakError,
-    AuthTokenExpired,
     AuthUserError,
 )
 from fastapi_keycloak_middleware.fast_api_user import FastApiUser
@@ -42,25 +38,13 @@ class KeycloakBackend(AuthenticationBackend):
     def __init__(
         self,
         keycloak_configuration: KeycloakConfiguration,
-        user_mapper: typing.Callable[
-            [typing.Dict[str, typing.Any]], typing.Awaitable[typing.Any]
-        ],
+        user_mapper: typing.Callable[[typing.Dict[str, typing.Any]], typing.Awaitable[typing.Any]],
     ):
         self.keycloak_configuration = keycloak_configuration
-        self.keycloak_openid = self._get_keycloak_openid(keycloak_configuration)
-        self.get_user = user_mapper if user_mapper else self._get_user
+        self.keycloak_openid = self._get_keycloak_openid()
+        self.get_user = user_mapper if user_mapper else KeycloakBackend._get_user
 
-        # Fetch KC public key if needed
-        if not keycloak_configuration.use_introspection_endpoint:
-            self.keycloak_public_key = (
-                "-----BEGIN PUBLIC KEY-----\n"
-                + self.keycloak_openid.public_key()
-                + "\n-----END PUBLIC KEY-----"
-            )
-
-    def _get_keycloak_openid(
-        self, keycloak_configuration: KeycloakConfiguration
-    ) -> KeycloakOpenID:
+    def _get_keycloak_openid(self) -> KeycloakOpenID:
         """
         Instance-scoped KeycloakOpenID object
         """
@@ -72,7 +56,8 @@ class KeycloakBackend(AuthenticationBackend):
             verify=self.keycloak_configuration.verify,
         )
 
-    async def _get_user(self, userinfo: typing.Dict[str, typing.Any]) -> BaseUser:
+    @staticmethod
+    async def _get_user(userinfo: typing.Dict[str, typing.Any]) -> BaseUser:
         """
         Default implementation of the get_user method.
         """
@@ -82,26 +67,29 @@ class KeycloakBackend(AuthenticationBackend):
             user_id=userinfo.get("user_id", ""),
         )
 
-    async def authenticate(
-        self, conn: HTTPConnection
-    ) -> Tuple[AuthCredentials, BaseUser]:
+    async def authenticate(self, conn: HTTPConnection) -> tuple[list[str], BaseUser | None]:
         """
         The authenticate method is invoked each time a route is called that
         the middleware is applied to.
         """
-        if "Authorization" not in conn.headers:
+
+        # If this is a websocket connection, we can extract the token
+        # from the cookies
+        if (
+            self.keycloak_configuration.enable_websocket_support
+            and conn.headers.get("upgrade") == "websocket"
+        ):
+            auth_header = conn.cookies.get(self.keycloak_configuration.websocket_cookie_name, None)
+        else:
+            auth_header = conn.headers.get("Authorization", None)
+
+        if not auth_header:
             raise AuthHeaderMissing
 
         # Check if token starts with the authentication scheme
-        auth_header = conn.headers["Authorization"]
         token = auth_header.split(" ")
-        if (
-            len(token) != 2
-            or token[0] != self.keycloak_configuration.authentication_scheme
-        ):
+        if len(token) != 2 or token[0] != self.keycloak_configuration.authentication_scheme:
             raise AuthInvalidToken
-
-        token_info = None
 
         # Depending on the chosen method by the user, either
         # use the introspection endpoint or decode the token
@@ -115,18 +103,11 @@ class KeycloakBackend(AuthenticationBackend):
         else:
             log.debug("Using keycloak public key to validate token")
             # Decode Token locally using the public key
-            try:
-                token_info = self.keycloak_openid.decode_token(
-                    token[1],
-                    key=self.keycloak_public_key,
-                    options=self.keycloak_configuration.decode_options,
-                )
-            except ExpiredSignatureError as exc:
-                raise AuthTokenExpired from exc
-            except JWTClaimsError as exc:
-                raise AuthClaimMissing from exc
-            except JWTError as exc:
-                raise AuthInvalidToken from exc
+            token_info = self.keycloak_openid.decode_token(
+                token[1],
+                self.keycloak_configuration.validate_token,
+                **self.keycloak_configuration.validation_options,
+            )
 
         # Calculate claims to extract
         # Default is user configured claims
@@ -139,10 +120,7 @@ class KeycloakBackend(AuthenticationBackend):
             # ...only add the device auth claim to the claims to extract
             claims = [self.keycloak_configuration.device_authentication_claim]
             # If claim based authorization is enabled...
-            if (
-                self.keycloak_configuration.authorization_method
-                == AuthorizationMethod.CLAIM
-            ):
+            if self.keycloak_configuration.authorization_method == AuthorizationMethod.CLAIM:
                 # ...add the authorization claim to the claims to extract
                 claims.append(self.keycloak_configuration.authorization_claim)
 
@@ -156,9 +134,7 @@ class KeycloakBackend(AuthenticationBackend):
                 if self.keycloak_configuration.reject_on_missing_claim:
                     log.warning("Rejecting request because of missing claim")
                     raise AuthClaimMissing from KeyError
-                log.debug(
-                    "Backend is configured to ignore missing claims, continuing..."
-                )
+                log.debug("Backend is configured to ignore missing claims, continuing...")
 
         # Handle Authorization depending on the Claim Method
         scope_auth = []

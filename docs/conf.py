@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
@@ -20,9 +20,9 @@ import fastapi_keycloak_middleware  # noqa: F401,E402
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "FastAPI Keycloak Middleware"
-copyright = "2023, Daniel Herrmann"
+copyright = "2024, Daniel Herrmann"
 author = "Daniel Herrmann"
-release = "0.3.0"
+release = "1.0.2"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

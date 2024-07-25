@@ -58,10 +58,28 @@ If you want to still use the token endpoint to validate the token, you can opt t
 
 Please make sure to understand the consequences before applying this configuration.
 
+Disabling Token Validation
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+It is possible to disable token validation altogether. Be aware that this is a security risk pretty much disables
+all security features of the library.
+
+.. code-block:: python
+   :emphasize-lines: 7
+
+    # Set up Keycloak
+    keycloak_config = KeycloakConfiguration(
+        url="https://sso.your-keycloak.com/auth/",
+        realm="<Realm Name>",
+        client_id="<Client ID>",
+        client_secret="<Client Secret>",
+        validate_token=False
+    )
+
 JWT Decoding Options
 ^^^^^^^^^^^^^^^^^^^^
 
-The upstream project `python-keycloak` uses `python-jose` under the hood to verify
+The upstream project `python-keycloak` uses `JWCrypto` under the hood to verify
 JWT tokens. This library uses sensible defaults for the JWT verification, but it is
 possible to modify the decode options if needed.
 
@@ -71,16 +89,17 @@ possible to modify the decode options if needed.
     # Set up Keycloak
     keycloak_config = KeycloakConfiguration(
         # ...
-        decode_options={
-            "verify_signature": True,
-            "verify_aud": False,
-            "verify_exp": True,
+        validation_options={
+            check_claims = {
+                "jti": None,
+                "exp": None,
+                "iat": None,
+            }
         }
     )
 
-Unfortunately, `python-jose` does not document the available options very well. Please
-refer to the source code of `python-jose` to confirm the verification options that can be
-configured: https://github.com/mpdavis/python-jose/blob/4b0701b46a8d00988afcc5168c2b3a1fd60d15d8/jose/jwt.py#L81
+Please refer to the `JWCrypto` documentation for the available options:
+https://jwcrypto.readthedocs.io/en/latest/jwt.html#jwcrypto.jwt.JWT
 
 Excluding Endpoints
 ^^^^^^^^^^^^^^^^^^^
@@ -110,8 +129,8 @@ The middleware provides a configuration option to exclude certain paths from aut
     ]
 
     app = FastAPI()
-    app.add_middleware(
-        KeycloakMiddleware,
+    setup_keycloak_middleware(
+        app,
         # ...
         exclude_patterns=excluded_routes,
     )
@@ -137,8 +156,8 @@ Alternatively you can use multiple :code:`FastAPI` applications and mount them t
     # This first app is secured
     secured_app = FastAPI()
 
-    app.add_middleware(
-        KeycloakMiddleware,
+    setup_keycloak_middleware(
+        app,
         # ...
         exclude_patterns=excluded_routes,
     )
@@ -218,6 +237,15 @@ If the claim is not present in the access token, the library will behave as usua
 
 .. note::
     To add the claim to your token, you can either use a ``Hardcoded claim`` mapper or any other method you prefer.
+
+Websocket Support
+^^^^^^^^^^^^^^^^^
+
+We can also inspect websocket connection requests and validate the token using the same mechanisms. Websockets do not support the same headers, therefore we have to use cookies instead.
+Websocket support is enabled by default, but can be disabled by setting the :code:`enable_websocket_support` parameter to :code:`False`.
+
+If enabled, the initial websocket connection request will be validated, subsequent messages within the same socket won't be affected.
+The cookie is expected to be named :code:`access_token` and contain the JWT token prefixed with :code:`Bearer`.
 
 Request Injection
 ^^^^^^^^^^^^^^^^^

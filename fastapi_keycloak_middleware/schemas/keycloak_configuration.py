@@ -2,9 +2,10 @@
 This module contains the schema to configure Keycloak.
 """
 
-from typing import Dict, Optional, Union
+from typing import Optional, Union
 
-from pydantic import BaseModel, Field
+from jwcrypto import jwk
+from pydantic import BaseModel, ConfigDict, Field
 
 from fastapi_keycloak_middleware.schemas.authorization_methods import (
     AuthorizationMethod,
@@ -13,7 +14,7 @@ from fastapi_keycloak_middleware.schemas.authorization_methods import (
 
 class KeycloakConfiguration(BaseModel):  # pylint: disable=too-few-public-methods
     """
-    This is a Pydantic schema used to pass backend konfiguration
+    This is a Pydantic schema used to pass backend configuration
     for the Keycloak Backend to the middleware.
 
     :param realm: Keycloak realm that should be used for token authentication.
@@ -23,6 +24,8 @@ class KeycloakConfiguration(BaseModel):  # pylint: disable=too-few-public-method
     :type url: str
     :param client_id: Client ID of the client used to validate the token.
     :type client_id: str
+    :param swagger_client_id: Client ID for swagger UI authentication. Defaults to None.
+    :type swagger_client_id: str, optional
     :param client_secret: Client secret of the client used to validate the token.
         The client secret is only needed if you use the introspection endpoint.
     :type client_secret: str, optional
@@ -59,22 +62,33 @@ class KeycloakConfiguration(BaseModel):  # pylint: disable=too-few-public-method
         To be specific, ``bool(value)`` must evaluate to ``True``.
     :param verify: Whether to verify SSL connection. Defaults to ``True``
     :type verify: Union[bool,str], optional
-    :param decode_options: Defines options to be passed to `python-jose`'s `decode``
-        function. Defaults to ``{"verify_signature": True, "verify_aud": True,
-        "verify_exp": True}``. See the following project for an overview of
-        acceptable options:
-        https://github.com/mpdavis/python-jose/blob/4b0701b46a8d00988afcc5168c2b3a1fd60d15d8/jose/jwt.py#L81
-    :type decode_options: Dict[str, Union[bool,int]], optional
+    :param validate_token: Whether to validate the token. Defaults to ``True``.
+    :type validate_token: bool, optional
+    :param validation_options: Decode options that are passed to `JWCrypto`'s JWT
+        constructor. Defaults to ``{}``. See the following project for an overview of
+        acceptable options: https://jwcrypto.readthedocs.io/en/latest/jwt.html
+    :type validation_options: dict[str, Union[str, dict[str, Union[None, str]], list[str]]],
+        optional
+    :param enable_websocket_support: Whether to enable WebSocket support. Defaults to ``True``.
+    :type enable_websocket_support: bool, optional
+    :param websocket_cookie_name: Name of the cookie that contains the access token.
+        Defaults to ``access_token``.
+    :type websocket_cookie_name: str, optional
     """
 
-    realm: str = Field(..., title="Realm", description="The realm to use.")
-    url: str = Field(..., title="URL", description="The URL of the Keycloak server.")
-    client_id: str = Field(..., title="Client ID", description="The client ID.")
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    realm: str = Field(title="Realm", description="The realm to use.")
+    url: str = Field(title="URL", description="The URL of the Keycloak server.")
+    client_id: str = Field(title="Client ID", description="The client ID.")
+    swagger_client_id: Optional[str] = Field(
+        default=None, title="Swagger Client ID", description="The client ID for the swagger UI."
+    )
     client_secret: Optional[str] = Field(
-        None, title="Client Secret", description="The client secret."
+        default=None, title="Client Secret", description="The client secret."
     )
     claims: list[str] = Field(
-        [
+        default=[
             "sub",
             "name",
             "family_name",
@@ -86,22 +100,22 @@ class KeycloakConfiguration(BaseModel):  # pylint: disable=too-few-public-method
         description="The claims to add to the user object.",
     )
     reject_on_missing_claim: bool = Field(
-        True,
+        default=True,
         title="Reject on Missing Claim",
         description="Whether to reject the request if a claim is missing.",
     )
     authentication_scheme: str = Field(
-        "Bearer",
+        default="Bearer",
         title="Authentication Scheme",
         description="The authentication scheme to use.",
     )
     authorization_method: AuthorizationMethod = Field(
-        AuthorizationMethod.NONE,
+        default=AuthorizationMethod.NONE,
         title="Authorization Method",
         description="The authorization method to use.",
     )
     authorization_claim: str = Field(
-        "roles",
+        default="roles",
         title="Authorization Claim",
         description="The claim to use for authorization.",
     )
@@ -111,12 +125,12 @@ class KeycloakConfiguration(BaseModel):  # pylint: disable=too-few-public-method
         description="The path to the claim to use for authorization. To use if the Authorization Claim is nested in the payload.",
     )
     use_introspection_endpoint: bool = Field(
-        False,
+        default=False,
         title="Use Introspection Endpoint",
         description="Whether to use the introspection endpoint.",
     )
     enable_device_authentication: bool = Field(
-        False,
+        default=False,
         title="Enable Device Authentication",
         description="Whether to enable device authentication. If device authentication"
         " is enabled, the middleware will ignore required user claims and not attempt"
@@ -124,22 +138,35 @@ class KeycloakConfiguration(BaseModel):  # pylint: disable=too-few-public-method
         " forwarded unmodified.",
     )
     device_authentication_claim: str = Field(
-        "is_device",
+        default="is_device",
         title="Device Authentication Claim",
         description="The claim that will be checked. If present and if it evaluates to"
         " true, the device authentication will be applied for the request.",
     )
     verify: Union[bool, str] = Field(
-        True,
+        default=True,
         title="Verify",
         description="Whether to verify the SSL connection",
     )
-    decode_options: Dict[str, Union[bool, int]] = Field(
-        {
-            "verify_signature": True,
-            "verify_aud": True,
-            "verify_exp": True,
-        },
-        title="JWT Decode Options",
-        description="Decode options that are passed to python-jose decode function.",
+    validate_token: bool = Field(
+        default=True,
+        title="Validate Token",
+        description="Whether to validate the token.",
+    )
+    validation_options: dict[
+        str, Union[str, dict[str, Union[None, str]], list[str], jwk.JWK, jwk.JWKSet]
+    ] = Field(
+        default={},
+        title="JWCrypto JWT Options",
+        description="Decode options that are passed to jwcrypto's JWT constructor.",
+    )
+    enable_websocket_support: bool = Field(
+        default=True,
+        title="Enable WebSocket Support",
+        description="if enabled, websocket connections are also checked for valid tokens.",
+    )
+    websocket_cookie_name: str = Field(
+        default="access_token",
+        title="WebSocket Cookie Name",
+        description="The name of the cookie that contains the access token.",
     )
